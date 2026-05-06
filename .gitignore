@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+
+# Virtual environments
+.venv/
+.venv_*/
+venv/
+env/
+
+# Cache
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+wandb/
+outputs/
+runs/
+
+# Large data / checkpoints
+checkpoints/
+processed_data/
+processed_data_ee/
+training_data/
+training_data
+training_data_old/
+assets/
+*.tar
+*.tar.gz
+*.zip
+*.hdf5
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# Project-specific
+.pipeline_status/
+.claude/
+bash_recap/
+
+# System
+.DS_Store
+*.tmp
+*.swp
