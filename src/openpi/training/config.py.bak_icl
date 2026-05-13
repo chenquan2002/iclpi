@@ -102,14 +102,6 @@ class DataConfig:
     filter_dict_path: str | None = None
     local_files_only: bool = False
 
-    # In-context support-video options. These are no-ops when use_support_context=False.
-    use_support_context: bool = False
-    support_manifest_path: str | None = None
-    support_rounds_per_cycle: int = 1
-    support_cache_size: int = 1024
-    num_support_frames: int = 8
-    support_caption_max_len: int = 128
-
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
         """Create a group."""

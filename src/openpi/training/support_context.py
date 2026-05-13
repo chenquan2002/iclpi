@@ -1,168 +1,192 @@
-"""Support-context data loading utilities for human-video in-context training.
+"""Support-video context loading for in-context pi0/pi0.5 training.
 
-This module intentionally keeps support frames/captions separate from robot observation.
-It does not put support images into data["image"].
-
-Typical use:
-  base_dataset = LeRobotDataset(...)
-  dataset = SupportRoundDataset(base_dataset, support_rounds_per_cycle=10)
-  transform = AddSupportContext(...)
-
-The training pipeline still needs to integrate this transform before Observation.from_dict,
-and then tokenize support_caption separately.
+This module keeps support images/captions separate from robot observations.
+It is designed to be inserted into the OpenPI data pipeline after robot
+policy-specific input transforms, and before model consumption.
 """
+
 from __future__ import annotations
 
 import json
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import Any, SupportsIndex
 
 import numpy as np
 
-
-def _to_int(x: Any) -> int:
-    if hasattr(x, "item"):
-        return int(x.item())
-    if isinstance(x, np.ndarray):
-        return int(x.reshape(-1)[0])
-    return int(x)
-
-
-def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
-    path = Path(path)
-    rows: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip():
-                rows.append(json.loads(line))
-    return rows
+import openpi.models.tokenizer as _tokenizer
 
 
 class SupportManifest:
-    """Lookup episode origin and support records.
+    """Lookup table for (global_episode_index, support_round_id) -> support context."""
 
-    support_manifest keys are (global_episode_index, support_round_id). If the requested
-    support_round_id is larger than available rounds, it is wrapped by modulo per episode.
-    """
+    def __init__(self, support_manifest_path: str | Path):
+        self.path = Path(support_manifest_path)
+        if not self.path.exists():
+            raise FileNotFoundError(f"Support manifest not found: {self.path}")
 
-    def __init__(self, episode_origin_path: str | Path, support_manifest_path: str | Path):
-        self.origin: dict[int, dict[str, Any]] = {}
-        for r in load_jsonl(episode_origin_path):
-            self.origin[int(r["global_episode_index"])] = r
+        self._records: dict[tuple[int, int], dict[str, Any]] = {}
+        self._episode_lengths: dict[int, int] = {}
+        with self.path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                ep = int(record["global_episode_index"])
+                rnd = int(record.get("support_round_id", 0))
+                key = (ep, rnd)
+                if key in self._records:
+                    raise ValueError(f"Duplicate support manifest key: {key}")
+                self._records[key] = record
+                if "episode_length" in record:
+                    self._episode_lengths[ep] = int(record["episode_length"])
 
-        self.support: dict[tuple[int, int], dict[str, Any]] = {}
-        self.rounds_by_ep: dict[int, list[int]] = defaultdict(list)
-        for r in load_jsonl(support_manifest_path):
-            ep = int(r["global_episode_index"])
-            rd = int(r["support_round_id"])
-            self.support[(ep, rd)] = r
-            self.rounds_by_ep[ep].append(rd)
-        for ep in list(self.rounds_by_ep):
-            self.rounds_by_ep[ep] = sorted(set(self.rounds_by_ep[ep]))
+        if not self._records:
+            raise ValueError(f"Support manifest is empty: {self.path}")
 
-    def get_origin(self, global_episode_index: int) -> dict[str, Any]:
-        return self.origin[global_episode_index]
+    def get(self, global_episode_index: int, support_round_id: int) -> dict[str, Any]:
+        key = (int(global_episode_index), int(support_round_id))
+        if key not in self._records:
+            raise KeyError(
+                f"No support record for global_episode_index={global_episode_index}, "
+                f"support_round_id={support_round_id}. Manifest={self.path}"
+            )
+        return self._records[key]
 
-    def get_support(self, global_episode_index: int, support_round_id: int = 0) -> dict[str, Any]:
-        rounds = self.rounds_by_ep.get(global_episode_index)
-        if not rounds:
-            raise KeyError(f"No support records for global_episode_index={global_episode_index}")
-        # Manifest is usually 0..R-1. Wrap to support arbitrary training length.
-        rd = rounds[support_round_id % len(rounds)]
-        return self.support[(global_episode_index, rd)]
+    def episode_length(self, global_episode_index: int) -> int:
+        ep = int(global_episode_index)
+        if ep not in self._episode_lengths:
+            raise KeyError(f"No episode_length for global_episode_index={ep} in {self.path}")
+        return self._episode_lengths[ep]
 
 
 class SupportFrameCache:
-    """Small LRU cache for frames.npy arrays."""
+    """Small LRU cache for support frames.npy arrays."""
 
     def __init__(self, max_items: int = 1024):
         self.max_items = int(max_items)
-        self.cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._cache: OrderedDict[str, np.ndarray] = OrderedDict()
 
     def get(self, frames_npy: str | Path) -> np.ndarray:
-        key = str(frames_npy)
-        if key in self.cache:
-            arr = self.cache.pop(key)
-            self.cache[key] = arr
-            return arr
-        arr = np.load(key)  # [K, H, W, 3], uint8, RGB
+        path = str(frames_npy)
+        if path in self._cache:
+            value = self._cache.pop(path)
+            self._cache[path] = value
+            return value
+
+        arr = np.load(path)
+        if arr.dtype != np.uint8:
+            raise ValueError(f"Expected uint8 support frames, got {arr.dtype}: {path}")
+        if arr.ndim != 4 or arr.shape[-1] != 3:
+            raise ValueError(f"Expected support frames shape [K,H,W,3], got {arr.shape}: {path}")
+
         if self.max_items > 0:
-            while len(self.cache) >= self.max_items:
-                self.cache.popitem(last=False)
-            self.cache[key] = arr
+            while len(self._cache) >= self.max_items:
+                self._cache.popitem(last=False)
+            self._cache[path] = arr
         return arr
 
 
 class SupportRoundDataset:
-    """Dataset wrapper that creates support_round_id without needing real epoch info.
+    """Dataset wrapper that adds a deterministic support_round_id to each sample.
 
-    base_idx = idx % len(base_dataset)
-    support_round_id = idx // len(base_dataset)
-
-    If training lasts longer than one full wrapper pass, the DataLoader will restart and
-    support_round_id sequence repeats. AddSupportContext also wraps round ids by modulo.
+    The base dataset is not copied. The wrapper logically expands it by
+    support_rounds_per_cycle. This lets the same robot trajectory be paired
+    with different precomputed support contexts.
     """
 
-    def __init__(self, base_dataset: Any, support_rounds_per_cycle: int):
-        self.base_dataset = base_dataset
-        self.base_len = len(base_dataset)
-        self.support_rounds_per_cycle = int(support_rounds_per_cycle)
-        if self.support_rounds_per_cycle <= 0:
-            raise ValueError("support_rounds_per_cycle must be positive")
+    def __init__(self, dataset, support_rounds_per_cycle: int):
+        if support_rounds_per_cycle < 1:
+            raise ValueError("support_rounds_per_cycle must be >= 1")
+        self._dataset = dataset
+        self._base_len = len(dataset)
+        self._rounds = int(support_rounds_per_cycle)
 
     def __len__(self) -> int:
-        return self.base_len * self.support_rounds_per_cycle
+        return self._base_len * self._rounds
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        base_idx = int(idx) % self.base_len
-        support_round_id = int(idx) // self.base_len
-        item = self.base_dataset[base_idx]
-        # Make a shallow dict copy so we can add metadata without mutating base item.
-        item = dict(item)
-        item["support_round_id"] = support_round_id
+    def __getitem__(self, index: SupportsIndex):
+        idx = int(index.__index__() if hasattr(index, "__index__") else index)
+        base_idx = idx % self._base_len
+        support_round_id = idx // self._base_len
+        item = dict(self._dataset[base_idx])
+        item["support_round_id"] = np.asarray(support_round_id, dtype=np.int64)
         return item
 
 
 class AddSupportContext:
-    """Transform that injects support_images/caption/progress into a data dict.
+    """Transform that appends support images, support caption tokens, and progress.
 
-    Required input fields after AlohaInputsPreserveMeta or equivalent:
-      episode_index, frame_index, optional support_round_id
+    Expected input keys after repack/policy transforms:
+      episode_index, frame_index, support_round_id
 
-    Added fields:
-      support_images: [K, H, W, 3] uint8 RGB
-      support_image_mask: [K] bool
-      support_frame_progress: [K] float32
-      chunk_progress: [1] float32
-      support_caption: str
+    Added output keys:
+      support_images, support_image_mask, support_frame_progress, chunk_progress,
+      support_caption_tokens, support_caption_mask
     """
 
     def __init__(
         self,
-        episode_origin_path: str | Path,
         support_manifest_path: str | Path,
-        cache_size: int = 1024,
+        *,
+        num_support_frames: int = 8,
+        support_cache_size: int = 1024,
+        support_caption_max_len: int = 128,
     ):
-        self.manifest = SupportManifest(episode_origin_path, support_manifest_path)
-        self.cache = SupportFrameCache(max_items=cache_size)
+        self.manifest = SupportManifest(support_manifest_path)
+        self.cache = SupportFrameCache(max_items=support_cache_size)
+        self.num_support_frames = int(num_support_frames)
+        self.support_caption_max_len = int(support_caption_max_len)
+        self._tokenizer: _tokenizer.PaligemmaTokenizer | None = None
+
+    def _caption_tokenizer(self) -> _tokenizer.PaligemmaTokenizer:
+        if self._tokenizer is None:
+            self._tokenizer = _tokenizer.PaligemmaTokenizer(self.support_caption_max_len)
+        return self._tokenizer
+
+    @staticmethod
+    def _as_int(x: Any) -> int:
+        arr = np.asarray(x)
+        return int(arr.reshape(-1)[0])
 
     def __call__(self, data: dict[str, Any]) -> dict[str, Any]:
-        global_ep = _to_int(data["episode_index"])
-        frame_idx = _to_int(data["frame_index"])
-        support_round_id = _to_int(data.get("support_round_id", 0))
+        if "episode_index" not in data or "frame_index" not in data:
+            raise KeyError(
+                "AddSupportContext requires episode_index and frame_index. "
+                "Check RepackTransform and policy input transforms preserve metadata."
+            )
+        if "support_round_id" not in data:
+            # Allows fixed-support manifests without wrapping, but SupportRoundDataset is preferred.
+            data["support_round_id"] = np.asarray(0, dtype=np.int64)
 
-        origin = self.manifest.get_origin(global_ep)
-        support = self.manifest.get_support(global_ep, support_round_id)
+        global_ep = self._as_int(data["episode_index"])
+        frame_idx = self._as_int(data["frame_index"])
+        round_id = self._as_int(data["support_round_id"])
 
+        support = self.manifest.get(global_ep, round_id)
         frames = self.cache.get(support["support_frames_npy"])
+        if frames.shape[0] != self.num_support_frames:
+            raise ValueError(
+                f"Expected {self.num_support_frames} support frames, got {frames.shape[0]} "
+                f"from {support['support_frames_npy']}"
+            )
+
         progress = np.asarray(support["support_frame_progress"], dtype=np.float32)
-        episode_length = int(origin["episode_length"])
+        if progress.shape != (self.num_support_frames,):
+            raise ValueError(
+                f"support_frame_progress must have shape ({self.num_support_frames},), got {progress.shape}"
+            )
+
+        episode_length = int(support.get("episode_length", self.manifest.episode_length(global_ep)))
         chunk_progress = frame_idx / max(episode_length - 1, 1)
 
+        caption = str(support.get("support_caption", ""))
+        caption_tokens, caption_mask = self._caption_tokenizer().tokenize(caption, state=None)
+
         data["support_images"] = frames
-        data["support_image_mask"] = np.ones((frames.shape[0],), dtype=bool)
+        data["support_image_mask"] = np.ones((self.num_support_frames,), dtype=bool)
         data["support_frame_progress"] = progress
         data["chunk_progress"] = np.asarray([chunk_progress], dtype=np.float32)
-        data["support_caption"] = str(support.get("support_caption", ""))
+        data["support_caption_tokens"] = caption_tokens.astype(np.int32)
+        data["support_caption_mask"] = caption_mask.astype(bool)
         return data

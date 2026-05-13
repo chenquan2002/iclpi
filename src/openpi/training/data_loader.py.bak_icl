@@ -13,7 +13,6 @@ import torch
 
 import openpi.models.model as _model
 import openpi.training.config as _config
-import openpi.training.support_context as _support_context
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
 
@@ -181,26 +180,15 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
             )
         norm_stats = data_config.norm_stats
 
-    input_transforms = [
-        *data_config.repack_transforms.inputs,
-        *data_config.data_transforms.inputs,
-    ]
-    if data_config.use_support_context:
-        if data_config.support_manifest_path is None:
-            raise ValueError("use_support_context=True requires support_manifest_path")
-        input_transforms.append(
-            _support_context.AddSupportContext(
-                data_config.support_manifest_path,
-                num_support_frames=data_config.num_support_frames,
-                support_cache_size=data_config.support_cache_size,
-                support_caption_max_len=data_config.support_caption_max_len,
-            )
-        )
-    input_transforms.extend([
-        _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-        *data_config.model_transforms.inputs,
-    ])
-    return TransformedDataset(dataset, input_transforms)
+    return TransformedDataset(
+        dataset,
+        [
+            *data_config.repack_transforms.inputs,
+            *data_config.data_transforms.inputs,
+            _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+            *data_config.model_transforms.inputs,
+        ],
+    )
 
 
 def transform_iterable_dataset(
@@ -312,11 +300,6 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
-    if data_config.use_support_context:
-        dataset = _support_context.SupportRoundDataset(
-            dataset,
-            support_rounds_per_cycle=data_config.support_rounds_per_cycle,
-        )
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     # Use TorchDataLoader for both frameworks

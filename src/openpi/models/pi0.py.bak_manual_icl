@@ -89,32 +89,6 @@ class Pi0(_model.BaseModel):
         )
         img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)
         self.PaliGemma = nnx.Dict(llm=llm, img=img)
-
-        # In-context support-video modules.
-        self.use_support_context = getattr(config, "use_support_context", False)
-        self.use_support_caption = getattr(config, "use_support_caption", True)
-        self.use_support_progress = getattr(config, "use_support_progress", True)
-        self.use_support_role_embedding = getattr(config, "use_support_role_embedding", True)
-        self.support_progress_embed_dim = getattr(config, "support_progress_embed_dim", 128)
-
-        if self.use_support_context:
-            self.support_progress_mlp_in = nnx.Linear(
-                2 * self.support_progress_embed_dim,
-                paligemma_config.width,
-                rngs=rngs,
-            )
-            self.support_progress_mlp_out = nnx.Linear(
-                paligemma_config.width,
-                paligemma_config.width,
-                rngs=rngs,
-            )
-
-            # Role embeddings mark token source:
-            # 0 = robot observation image, 1 = support image,
-            # 2 = support caption, 3 = task prompt.
-            self.support_role_embeddings = nnx.Param(
-                jnp.zeros((4, paligemma_config.width), dtype=jnp.dtype(config.dtype))
-            )
         self.action_in_proj = nnx.Linear(config.action_dim, action_expert_config.width, rngs=rngs)
         if config.pi05:
             self.time_mlp_in = nnx.Linear(action_expert_config.width, action_expert_config.width, rngs=rngs)
@@ -128,59 +102,6 @@ class Pi0(_model.BaseModel):
         # This attribute gets automatically set by model.train() and model.eval().
         self.deterministic = True
 
-    def _role_embedding(self, role_index: int, dtype):
-        if not getattr(self, "use_support_context", False):
-            return None
-        if not getattr(self, "use_support_role_embedding", False):
-            return None
-        return self.support_role_embeddings.value[role_index].astype(dtype)
-
-    def _support_progress_embedding(
-        self,
-        support_frame_progress,
-        chunk_progress,
-        image_tokens_per_frame: int,
-        dtype,
-    ):
-        """Build progress embeddings for support image tokens.
-
-        support_frame_progress: [B, K]
-        chunk_progress: [B, 1]
-        returns: [B, K * image_tokens_per_frame, D]
-        """
-        batch_size, num_frames = support_frame_progress.shape
-
-        frame_progress = support_frame_progress.astype(jnp.float32)
-        chunk_progress = chunk_progress.astype(jnp.float32)
-        chunk_progress = jnp.broadcast_to(chunk_progress, frame_progress.shape)
-
-        frame_emb = posemb_sincos(
-            frame_progress.reshape(-1),
-            self.support_progress_embed_dim,
-            min_period=4e-3,
-            max_period=4.0,
-        )
-        chunk_emb = posemb_sincos(
-            chunk_progress.reshape(-1),
-            self.support_progress_embed_dim,
-            min_period=4e-3,
-            max_period=4.0,
-        )
-
-        progress_emb = jnp.concatenate([frame_emb, chunk_emb], axis=-1)
-        progress_emb = self.support_progress_mlp_in(progress_emb)
-        progress_emb = nnx.swish(progress_emb)
-        progress_emb = self.support_progress_mlp_out(progress_emb)
-        progress_emb = progress_emb.astype(dtype)
-        progress_emb = progress_emb.reshape(batch_size, num_frames, -1)
-
-        progress_emb = einops.repeat(
-            progress_emb,
-            "b k d -> b (k s) d",
-            s=image_tokens_per_frame,
-        )
-        return progress_emb
-
     @at.typecheck
     def embed_prefix(
         self, obs: _model.Observation
@@ -188,14 +109,9 @@ class Pi0(_model.BaseModel):
         input_mask = []
         ar_mask = []
         tokens = []
-
-        # 1. Robot observation images: only robot's own cameras.
+        # embed images
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
-
-            role = self._role_embedding(0, image_tokens.dtype)
-            if role is not None:
-                image_tokens = image_tokens + role
 
             tokens.append(image_tokens)
             input_mask.append(
@@ -205,90 +121,16 @@ class Pi0(_model.BaseModel):
                     s=image_tokens.shape[1],
                 )
             )
-            # Prefix tokens use full attention.
+            # image tokens attend to each other
             ar_mask += [False] * image_tokens.shape[1]
 
-        # 2. Support video frames: independent support context, not robot observation cameras.
-        if getattr(self, "use_support_context", False) and obs.support_images is not None:
-            support_images = obs.support_images
-            batch_size, num_support_frames = support_images.shape[:2]
-
-            flat_support_images = einops.rearrange(
-                support_images,
-                "b k h w c -> (b k) h w c",
-            )
-            support_image_tokens, _ = self.PaliGemma.img(flat_support_images, train=False)
-            image_tokens_per_frame = support_image_tokens.shape[1]
-            support_image_tokens = einops.rearrange(
-                support_image_tokens,
-                "(b k) s d -> b (k s) d",
-                b=batch_size,
-                k=num_support_frames,
-            )
-
-            role = self._role_embedding(1, support_image_tokens.dtype)
-            if role is not None:
-                support_image_tokens = support_image_tokens + role
-
-            if (
-                getattr(self, "use_support_progress", False)
-                and obs.support_frame_progress is not None
-                and obs.chunk_progress is not None
-            ):
-                support_image_tokens = support_image_tokens + self._support_progress_embedding(
-                    obs.support_frame_progress,
-                    obs.chunk_progress,
-                    image_tokens_per_frame,
-                    support_image_tokens.dtype,
-                )
-
-            tokens.append(support_image_tokens)
-
-            if obs.support_image_mask is None:
-                support_image_mask = jnp.ones(
-                    (batch_size, num_support_frames),
-                    dtype=jnp.bool_,
-                )
-            else:
-                support_image_mask = obs.support_image_mask
-
-            input_mask.append(
-                einops.repeat(
-                    support_image_mask,
-                    "b k -> b (k s)",
-                    s=image_tokens_per_frame,
-                )
-            )
-            ar_mask += [False] * support_image_tokens.shape[1]
-
-        # 3. Support caption: global text description of the support video.
-        if (
-            getattr(self, "use_support_context", False)
-            and getattr(self, "use_support_caption", True)
-            and obs.support_caption_tokens is not None
-        ):
-            support_caption_tokens = self.PaliGemma.llm(obs.support_caption_tokens, method="embed")
-
-            role = self._role_embedding(2, support_caption_tokens.dtype)
-            if role is not None:
-                support_caption_tokens = support_caption_tokens + role
-
-            tokens.append(support_caption_tokens)
-            input_mask.append(obs.support_caption_mask)
-            ar_mask += [False] * support_caption_tokens.shape[1]
-
-        # 4. Task prompt: original robot task instruction.
+        # add language (aka tokenized inputs)
         if obs.tokenized_prompt is not None:
             tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
-
-            role = self._role_embedding(3, tokenized_inputs.dtype)
-            if role is not None:
-                tokenized_inputs = tokenized_inputs + role
-
             tokens.append(tokenized_inputs)
             input_mask.append(obs.tokenized_prompt_mask)
+            # full attention between image and language inputs
             ar_mask += [False] * tokenized_inputs.shape[1]
-
         tokens = jnp.concatenate(tokens, axis=1)
         input_mask = jnp.concatenate(input_mask, axis=1)
         ar_mask = jnp.array(ar_mask)

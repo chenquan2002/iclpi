@@ -106,35 +106,18 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
-    # In-context support-video fields. These are separate from robot observation images.
-    support_images: at.Float[ArrayT, "*b k h w c"] | None = None
-    support_image_mask: at.Bool[ArrayT, "*b k"] | None = None
-    support_frame_progress: at.Float[ArrayT, "*b k"] | None = None
-    chunk_progress: at.Float[ArrayT, "*b one"] | None = None
-    support_caption_tokens: at.Int[ArrayT, "*b l"] | None = None
-    support_caption_mask: at.Bool[ArrayT, "*b l"] | None = None
-
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":
         """This method defines the mapping between unstructured data (i.e., nested dict) to the structured Observation format."""
         # Ensure that tokenized_prompt and tokenized_prompt_mask are provided together.
         if ("tokenized_prompt" in data) != ("tokenized_prompt_mask" in data):
             raise ValueError("tokenized_prompt and tokenized_prompt_mask must be provided together.")
-        if ("support_caption_tokens" in data) != ("support_caption_mask" in data):
-            raise ValueError("support_caption_tokens and support_caption_mask must be provided together.")
         # If images are uint8, convert them to [-1, 1] float32.
         for key in data["image"]:
             if data["image"][key].dtype == np.uint8:
                 data["image"][key] = data["image"][key].astype(np.float32) / 255.0 * 2.0 - 1.0
             elif hasattr(data["image"][key], "dtype") and data["image"][key].dtype == torch.uint8:
                 data["image"][key] = data["image"][key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
-
-        support_images = data.get("support_images")
-        if support_images is not None:
-            if getattr(support_images, "dtype", None) == np.uint8:
-                data["support_images"] = support_images.astype(np.float32) / 255.0 * 2.0 - 1.0
-            elif hasattr(support_images, "dtype") and support_images.dtype == torch.uint8:
-                data["support_images"] = support_images.to(torch.float32) / 255.0 * 2.0 - 1.0
         return cls(
             images=data["image"],
             image_masks=data["image_mask"],
@@ -143,12 +126,6 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
-            support_images=data.get("support_images"),
-            support_image_mask=data.get("support_image_mask"),
-            support_frame_progress=data.get("support_frame_progress"),
-            chunk_progress=data.get("chunk_progress"),
-            support_caption_tokens=data.get("support_caption_tokens"),
-            support_caption_mask=data.get("support_caption_mask"),
         )
 
     def to_dict(self) -> at.PyTree[ArrayT]:
@@ -228,12 +205,6 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
-        support_images=observation.support_images,
-        support_image_mask=observation.support_image_mask,
-        support_frame_progress=observation.support_frame_progress,
-        chunk_progress=observation.chunk_progress,
-        support_caption_tokens=observation.support_caption_tokens,
-        support_caption_mask=observation.support_caption_mask,
     )
 
 

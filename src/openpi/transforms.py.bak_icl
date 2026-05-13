@@ -13,10 +13,6 @@ from openpi.shared import array_typing as at
 from openpi.shared import normalize as _normalize
 
 DataDict: TypeAlias = at.PyTree
-
-# Metadata needed by in-context support-video loading. These keys are not
-# normalized and are kept outside the robot observation image dict.
-META_KEYS_TO_PRESERVE = ("episode_index", "frame_index", "task_index", "support_round_id")
 NormStats: TypeAlias = _normalize.NormStats
 
 
@@ -103,13 +99,7 @@ class RepackTransform(DataTransformFn):
 
     def __call__(self, data: DataDict) -> DataDict:
         flat_item = flatten_dict(data)
-        repacked = jax.tree.map(lambda k: flat_item[k], self.structure)
-        # Preserve lightweight metadata for support-context lookup. This avoids
-        # changing every DataConfig repack structure by hand.
-        for key in META_KEYS_TO_PRESERVE:
-            if key in data and key not in repacked:
-                repacked[key] = data[key]
-        return repacked
+        return jax.tree.map(lambda k: flat_item[k], self.structure)
 
 
 @dataclasses.dataclass(frozen=True)
