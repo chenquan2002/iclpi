@@ -185,6 +185,8 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
         *data_config.repack_transforms.inputs,
         *data_config.data_transforms.inputs,
     ]
+    # ICL SUPPORT: add support_images / progress / support_caption_tokens.
+    # This runs after policy/repack transforms so episode_index/frame_index are available.
     if data_config.use_support_context:
         if data_config.support_manifest_path is None:
             raise ValueError("use_support_context=True requires support_manifest_path")
@@ -196,10 +198,12 @@ def transform_dataset(dataset: Dataset, data_config: _config.DataConfig, *, skip
                 support_caption_max_len=data_config.support_caption_max_len,
             )
         )
-    input_transforms.extend([
-        _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
-        *data_config.model_transforms.inputs,
-    ])
+    input_transforms.extend(
+        [
+            _transforms.Normalize(norm_stats, use_quantiles=data_config.use_quantile_norm),
+            *data_config.model_transforms.inputs,
+        ]
+    )
     return TransformedDataset(dataset, input_transforms)
 
 
@@ -312,6 +316,8 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    # ICL SUPPORT: logically expand each sample with support_round_id.
+    # This does not copy robot data on disk; it only changes dataset indexing.
     if data_config.use_support_context:
         dataset = _support_context.SupportRoundDataset(
             dataset,

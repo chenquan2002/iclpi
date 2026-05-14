@@ -25,16 +25,14 @@ class Pi0Config(_model.BaseModelConfig):
     action_dim: int = 32
     action_horizon: int = 50
     max_token_len: int = None  # type: ignore
-
     # Pi05 has two differences from Pi0:
     # - the state input is part of the discrete language tokens rather than a continuous input that is part of the suffix
     # - the action expert uses adaRMSNorm to inject the flow matching timestep
     pi05: bool = False
-
     # This config option is not used directly by the model, but it is read by the ModelTransformFactory.
     discrete_state_input: bool = None  # type: ignore
 
-    # In-context support-video configuration.
+    # ICL SUPPORT: in-context support-video configuration.
     use_support_context: bool = False
     num_support_frames: int = 8
     use_support_caption: bool = True
@@ -82,6 +80,7 @@ class Pi0Config(_model.BaseModelConfig):
                 state=jax.ShapeDtypeStruct([batch_size, self.action_dim], jnp.float32),
                 tokenized_prompt=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.int32),
                 tokenized_prompt_mask=jax.ShapeDtypeStruct([batch_size, self.max_token_len], jnp.bool_),
+                # ICL SUPPORT: optional support-video input specs.
                 support_images=(
                     jax.ShapeDtypeStruct(
                         [batch_size, self.num_support_frames, *_model.IMAGE_RESOLUTION, 3],
@@ -116,21 +115,16 @@ class Pi0Config(_model.BaseModelConfig):
                     else None
                 ),
             )
+        action_spec = jax.ShapeDtypeStruct([batch_size, self.action_horizon, self.action_dim], jnp.float32)
 
-        action_spec = jax.ShapeDtypeStruct(
-            [batch_size, self.action_horizon, self.action_dim],
-            jnp.float32,
-        )
         return observation_spec, action_spec
 
     def get_freeze_filter(self) -> nnx.filterlib.Filter:
         """Returns the freeze filter based on the model config."""
         filters = []
         has_lora = False
-
         gemma_params_filter = nnx_utils.PathRegex(".*llm.*")
         action_expert_params_filter = nnx_utils.PathRegex(".*llm.*_1.*")
-
         if "lora" in self.paligemma_variant:
             filters.append(
                 gemma_params_filter,
@@ -141,7 +135,6 @@ class Pi0Config(_model.BaseModelConfig):
                     nnx.Not(action_expert_params_filter),
                 )
             has_lora = True
-
         elif "lora" in self.action_expert_variant:
             filters.append(
                 action_expert_params_filter,
@@ -153,13 +146,10 @@ class Pi0Config(_model.BaseModelConfig):
             filters.append(
                 nnx.Not(nnx_utils.PathRegex(".*lora.*")),
             )
-
         if not filters:
             return nnx.Nothing
-
         return nnx.All(*filters)
-
-    # modify ==> freeze the vlm except expert action head.
+    #modify ==> freeze the vlm except expert action head.
     def get_vlm_freeze_filter(self) -> nnx.filterlib.Filter:
         """Freeze VLM / PaliGemma params, keep action expert trainable."""
         gemma_params_filter = nnx_utils.PathRegex(".*llm.*")

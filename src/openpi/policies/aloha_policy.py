@@ -84,17 +84,11 @@ class AlohaInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
-
-        # Preserve metadata used by in-context support lookup.
-
-        # These fields are not robot observations and must not be mixed into the image dict.
-
+        # ICL SUPPORT: Preserve metadata used by support-video lookup.
+        # These keys are not robot observations and must not be mixed into `inputs["image"]`.
         for key in ("episode_index", "frame_index", "task_index", "support_round_id"):
-
             if key in data:
-
                 inputs[key] = data[key]
-
 
         return inputs
 

@@ -47,6 +47,15 @@ IMAGE_KEYS = (
 IMAGE_RESOLUTION = (224, 224)
 
 
+def image_to_float32(image):
+    """Convert uint8 image arrays/tensors to [-1, 1] float32."""
+    if getattr(image, "dtype", None) == np.uint8:
+        return image.astype(np.float32) / 255.0 * 2.0 - 1.0
+    if hasattr(image, "dtype") and image.dtype == torch.uint8:
+        return image.to(torch.float32) / 255.0 * 2.0 - 1.0
+    return image
+
+
 # Data format
 #
 # Data transforms produce the model input as a nested dictionary which is later converted
@@ -106,7 +115,8 @@ class Observation(Generic[ArrayT]):
     # Token loss mask (for FAST autoregressive model).
     token_loss_mask: at.Bool[ArrayT, "*b l"] | None = None
 
-    # In-context support-video fields. These are separate from robot observation images.
+    # ICL SUPPORT: support-video context fields.
+    # These are independent from robot observation images.
     support_images: at.Float[ArrayT, "*b k h w c"] | None = None
     support_image_mask: at.Bool[ArrayT, "*b k"] | None = None
     support_frame_progress: at.Float[ArrayT, "*b k"] | None = None
@@ -129,12 +139,11 @@ class Observation(Generic[ArrayT]):
             elif hasattr(data["image"][key], "dtype") and data["image"][key].dtype == torch.uint8:
                 data["image"][key] = data["image"][key].to(torch.float32).permute(0, 3, 1, 2) / 255.0 * 2.0 - 1.0
 
+        # ICL SUPPORT: support images are stored separately from `image` dict.
         support_images = data.get("support_images")
         if support_images is not None:
-            if getattr(support_images, "dtype", None) == np.uint8:
-                data["support_images"] = support_images.astype(np.float32) / 255.0 * 2.0 - 1.0
-            elif hasattr(support_images, "dtype") and support_images.dtype == torch.uint8:
-                data["support_images"] = support_images.to(torch.float32) / 255.0 * 2.0 - 1.0
+            support_images = image_to_float32(support_images)
+
         return cls(
             images=data["image"],
             image_masks=data["image_mask"],
@@ -143,7 +152,7 @@ class Observation(Generic[ArrayT]):
             tokenized_prompt_mask=data.get("tokenized_prompt_mask"),
             token_ar_mask=data.get("token_ar_mask"),
             token_loss_mask=data.get("token_loss_mask"),
-            support_images=data.get("support_images"),
+            support_images=support_images,
             support_image_mask=data.get("support_image_mask"),
             support_frame_progress=data.get("support_frame_progress"),
             chunk_progress=data.get("chunk_progress"),
@@ -228,6 +237,7 @@ def preprocess_observation(
         tokenized_prompt_mask=observation.tokenized_prompt_mask,
         token_ar_mask=observation.token_ar_mask,
         token_loss_mask=observation.token_loss_mask,
+        # ICL SUPPORT: preserve support context through preprocessing.
         support_images=observation.support_images,
         support_image_mask=observation.support_image_mask,
         support_frame_progress=observation.support_frame_progress,

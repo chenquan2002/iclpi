@@ -46,14 +46,14 @@ class CheckpointWeightLoader(WeightLoader):
     """
 
     params_path: str
-    # Parameters matching this regex are allowed to be absent from an older checkpoint
-    # and will keep their current randomly initialized values.
+    # ICL SUPPORT: allow newly added support modules to keep random init
+    # when loading an older pi05 checkpoint.
     allow_missing_regex: str = ".*(lora|support).*"
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
         loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
-        # Add allowed missing weights, e.g. LoRA or newly introduced support modules.
+        # ICL SUPPORT: merge allowed missing weights, e.g. LoRA or support modules.
         return _merge_params(loaded_params, params, missing_regex=self.allow_missing_regex)
 
 

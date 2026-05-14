@@ -1,8 +1,9 @@
 """Support-video context loading for in-context pi0/pi0.5 training.
 
+ICL SUPPORT:
 This module keeps support images/captions separate from robot observations.
-It is designed to be inserted into the OpenPI data pipeline after robot
-policy-specific input transforms, and before model consumption.
+It is inserted into the OpenPI data pipeline after robot policy-specific input
+transforms, before model consumption.
 """
 
 from __future__ import annotations
@@ -18,7 +19,12 @@ import openpi.models.tokenizer as _tokenizer
 
 
 class SupportManifest:
-    """Lookup table for (global_episode_index, support_round_id) -> support context."""
+    """Lookup table for (global_episode_index, support_round_id) -> support context.
+
+    ICL SUPPORT:
+    The support manifest is generated offline from support_bank and LeRobot
+    meta/episode_origin.jsonl. Training only performs deterministic lookup.
+    """
 
     def __init__(self, support_manifest_path: str | Path):
         self.path = Path(support_manifest_path)
@@ -27,6 +33,7 @@ class SupportManifest:
 
         self._records: dict[tuple[int, int], dict[str, Any]] = {}
         self._episode_lengths: dict[int, int] = {}
+
         with self.path.open("r", encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
@@ -61,7 +68,12 @@ class SupportManifest:
 
 
 class SupportFrameCache:
-    """Small LRU cache for support frames.npy arrays."""
+    """Small LRU cache for support frames.npy arrays.
+
+    ICL SUPPORT:
+    Prevents each batch from repeatedly loading and decoding support frames.
+    `frames.npy` is expected to be [K,H,W,3], uint8, RGB.
+    """
 
     def __init__(self, max_items: int = 1024):
         self.max_items = int(max_items)
@@ -90,6 +102,7 @@ class SupportFrameCache:
 class SupportRoundDataset:
     """Dataset wrapper that adds a deterministic support_round_id to each sample.
 
+    ICL SUPPORT:
     The base dataset is not copied. The wrapper logically expands it by
     support_rounds_per_cycle. This lets the same robot trajectory be paired
     with different precomputed support contexts.
@@ -109,20 +122,28 @@ class SupportRoundDataset:
         idx = int(index.__index__() if hasattr(index, "__index__") else index)
         base_idx = idx % self._base_len
         support_round_id = idx // self._base_len
+
         item = dict(self._dataset[base_idx])
         item["support_round_id"] = np.asarray(support_round_id, dtype=np.int64)
         return item
 
 
 class AddSupportContext:
-    """Transform that appends support images, support caption tokens, and progress.
+    """Transform that appends support images, caption tokens, and progress.
 
-    Expected input keys after repack/policy transforms:
-      episode_index, frame_index, support_round_id
+    ICL SUPPORT:
+    Expected input keys after policy/repack transforms:
+      - episode_index
+      - frame_index
+      - support_round_id
 
     Added output keys:
-      support_images, support_image_mask, support_frame_progress, chunk_progress,
-      support_caption_tokens, support_caption_mask
+      - support_images
+      - support_image_mask
+      - support_frame_progress
+      - chunk_progress
+      - support_caption_tokens
+      - support_caption_mask
     """
 
     def __init__(
@@ -155,15 +176,18 @@ class AddSupportContext:
                 "AddSupportContext requires episode_index and frame_index. "
                 "Check RepackTransform and policy input transforms preserve metadata."
             )
+
         if "support_round_id" not in data:
-            # Allows fixed-support manifests without wrapping, but SupportRoundDataset is preferred.
+            # Fixed-support fallback, but SupportRoundDataset is preferred.
             data["support_round_id"] = np.asarray(0, dtype=np.int64)
 
         global_ep = self._as_int(data["episode_index"])
         frame_idx = self._as_int(data["frame_index"])
-        round_id = self._as_int(data["support_round_id"])
+        support_round_id = self._as_int(data["support_round_id"])
 
-        support = self.manifest.get(global_ep, round_id)
+        support = self.manifest.get(global_ep, support_round_id)
+        episode_length = int(support.get("episode_length", self.manifest.episode_length(global_ep)))
+
         frames = self.cache.get(support["support_frames_npy"])
         if frames.shape[0] != self.num_support_frames:
             raise ValueError(
@@ -174,19 +198,19 @@ class AddSupportContext:
         progress = np.asarray(support["support_frame_progress"], dtype=np.float32)
         if progress.shape != (self.num_support_frames,):
             raise ValueError(
-                f"support_frame_progress must have shape ({self.num_support_frames},), got {progress.shape}"
+                f"support_frame_progress should have shape ({self.num_support_frames},), got {progress.shape}"
             )
 
-        episode_length = int(support.get("episode_length", self.manifest.episode_length(global_ep)))
         chunk_progress = frame_idx / max(episode_length - 1, 1)
 
-        caption = str(support.get("support_caption", ""))
-        caption_tokens, caption_mask = self._caption_tokenizer().tokenize(caption, state=None)
-
+        # ICL SUPPORT: support images are independent from robot observation images.
         data["support_images"] = frames
         data["support_image_mask"] = np.ones((self.num_support_frames,), dtype=bool)
         data["support_frame_progress"] = progress
         data["chunk_progress"] = np.asarray([chunk_progress], dtype=np.float32)
-        data["support_caption_tokens"] = caption_tokens.astype(np.int32)
-        data["support_caption_mask"] = caption_mask.astype(bool)
+
+        caption = str(support.get("support_caption", ""))
+        tokens, mask = self._caption_tokenizer().tokenize(caption, state=None)
+        data["support_caption_tokens"] = tokens.astype(np.int32)
+        data["support_caption_mask"] = mask.astype(bool)
         return data

@@ -89,8 +89,7 @@ class Pi0(_model.BaseModel):
         )
         img.lazy_init(next(iter(config.fake_obs().images.values())), train=False, rngs=rngs)
         self.PaliGemma = nnx.Dict(llm=llm, img=img)
-
-        # In-context support-video modules.
+        # ICL SUPPORT: support-video prefix modules.
         self.use_support_context = getattr(config, "use_support_context", False)
         self.use_support_caption = getattr(config, "use_support_caption", True)
         self.use_support_progress = getattr(config, "use_support_progress", True)
@@ -109,9 +108,9 @@ class Pi0(_model.BaseModel):
                 rngs=rngs,
             )
 
-            # Role embeddings mark token source:
-            # 0 = robot observation image, 1 = support image,
-            # 2 = support caption, 3 = task prompt.
+            # ICL SUPPORT: learnable token-role embeddings.
+            # 0=robot observation image, 1=support image,
+            # 2=support caption, 3=task prompt.
             self.support_role_embeddings = nnx.Param(
                 jnp.zeros((4, paligemma_config.width), dtype=jnp.dtype(config.dtype))
             )
@@ -129,6 +128,7 @@ class Pi0(_model.BaseModel):
         self.deterministic = True
 
     def _role_embedding(self, role_index: int, dtype):
+        # ICL SUPPORT: return a learned role embedding for token source identity.
         if not getattr(self, "use_support_context", False):
             return None
         if not getattr(self, "use_support_role_embedding", False):
@@ -144,9 +144,10 @@ class Pi0(_model.BaseModel):
     ):
         """Build progress embeddings for support image tokens.
 
-        support_frame_progress: [B, K]
-        chunk_progress: [B, 1]
-        returns: [B, K * image_tokens_per_frame, D]
+        ICL SUPPORT:
+        support_frame_progress indicates where each support frame is in the support video.
+        chunk_progress indicates where the current robot frame is in the trajectory.
+        Caption tokens are global video descriptions and do not use progress.
         """
         batch_size, num_frames = support_frame_progress.shape
 
@@ -189,7 +190,7 @@ class Pi0(_model.BaseModel):
         ar_mask = []
         tokens = []
 
-        # 1. Robot observation images: only robot's own cameras.
+        # ICL SUPPORT: 1. Robot observation images, only robot's own cameras.
         for name in obs.images:
             image_tokens, _ = self.PaliGemma.img(obs.images[name], train=False)
 
@@ -205,10 +206,9 @@ class Pi0(_model.BaseModel):
                     s=image_tokens.shape[1],
                 )
             )
-            # Prefix tokens use full attention.
             ar_mask += [False] * image_tokens.shape[1]
 
-        # 2. Support video frames: independent support context, not robot observation cameras.
+        # ICL SUPPORT: 2. Support video frames, independent from robot observation cameras.
         if getattr(self, "use_support_context", False) and obs.support_images is not None:
             support_images = obs.support_images
             batch_size, num_support_frames = support_images.shape[:2]
@@ -245,10 +245,7 @@ class Pi0(_model.BaseModel):
             tokens.append(support_image_tokens)
 
             if obs.support_image_mask is None:
-                support_image_mask = jnp.ones(
-                    (batch_size, num_support_frames),
-                    dtype=jnp.bool_,
-                )
+                support_image_mask = jnp.ones((batch_size, num_support_frames), dtype=jnp.bool_)
             else:
                 support_image_mask = obs.support_image_mask
 
@@ -261,7 +258,8 @@ class Pi0(_model.BaseModel):
             )
             ar_mask += [False] * support_image_tokens.shape[1]
 
-        # 3. Support caption: global text description of the support video.
+        # ICL SUPPORT: 3. Support caption, global text description of support video.
+        # It does not receive progress encoding.
         if (
             getattr(self, "use_support_context", False)
             and getattr(self, "use_support_caption", True)
@@ -277,7 +275,7 @@ class Pi0(_model.BaseModel):
             input_mask.append(obs.support_caption_mask)
             ar_mask += [False] * support_caption_tokens.shape[1]
 
-        # 4. Task prompt: original robot task instruction.
+        # ICL SUPPORT: 4. Original task prompt.
         if obs.tokenized_prompt is not None:
             tokenized_inputs = self.PaliGemma.llm(obs.tokenized_prompt, method="embed")
 

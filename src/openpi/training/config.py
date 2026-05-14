@@ -102,7 +102,7 @@ class DataConfig:
     filter_dict_path: str | None = None
     local_files_only: bool = False
 
-    # In-context support-video options. These are no-ops when use_support_context=False.
+    # ICL SUPPORT: data-side support-video context configuration.
     use_support_context: bool = False
     support_manifest_path: str | None = None
     support_rounds_per_cycle: int = 1
@@ -805,149 +805,7 @@ class TrainConfig:
 import os
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
-    ##add+++++++++++++++++++++aloha-ee
-    TrainConfig(
-        name="pi05_aloha_robotwin_ee_lora",
-        # 核心：定义模型
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-            # 【极重要】修改 Action Dimension
-            # 原始 State/Action 是 16维，但经过 Delta 转换后变成了 14维 (XYZ+Euler+Grip)*2
-            # 所以模型需要学习的是 14维 的分布
-            # action_dim=14, 
-        ),
-        
-        # 数据配置
-        data=LeRobotAlohaDataConfig_ee(
-            # 指向你刚刚转换好的 LeRobot 数据集
-            repo_id=os.getenv("REPO_ID", "chenquan/beat_block_ee_test"), 
-            
-            # 使用 Delta 转换
-            use_delta_ee_actions=True, 
-            
-            base_config=DataConfig(
-                local_files_only=True,
-                prompt_from_task=True,
-            ),
-        ),
-        
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True, 
-            paligemma_variant="gemma_2b_lora", 
-            action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
-        
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/home/chenquan/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
-        ),
-        
-        batch_size=32,
-        num_train_steps=30000,
-        ema_decay=None, 
-        fsdp_devices=2,
-        save_interval=10000,
-    ),
-    ###
-    ### finetune config for robotwin
-    ###
-    ##ur5e
-    # 你的 RobotWin UR5e 专用配置
-    TrainConfig(
-        # 1. 修改名称：这个名字将决定 assets 文件夹生成在哪里
-        # 运行 compute_norm_stats 后，统计数据会自动生成在 ./assets/pi05_ur5_robotwin_lora/ 下
-        name="pi05_ur5_robotwin_lora",
-        
-        # 2. 模型定义：保持原样 (Pi0.5 + LoRA)
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora"
-        ),
-        
-        # 3. 数据配置：切换为我们新写的 UR5 配置类
-        data=LeRobotUR5DataConfig(
-            # 替换为你实际转换出来的 LeRobot 数据集路径
-            repo_id=os.getenv("REPO_ID", "pick_blue_cube_test_3_repo"),
-            # repo_id="pick_place_demo1_repo", 
-            adapt_to_pi=False,
-            # 【关键】：我删除了 assets=AssetsConfig(...) 代码块
-            # 这样代码就会使用默认逻辑：去 ./assets/pi05_ur5_robotwin_lora/repo_id/ 下面找数据
-            
-            # 4. 字段映射：把 RobotWin 的数据映射给 UR5Inputs
-            repack_transforms=_transforms.Group(inputs=[
-                _transforms.RepackTransform({
-                    # 图像：右边是 RobotWin HDF5 里的名字，左边是 UR5Inputs 需要的名字
-                    "base_rgb": "observation.images.cam_high",
-                    "wrist_rgb": "observation.images.cam_left_wrist", # 请确认 RobotWin 里是不是叫 cam_wrist
-                    
-                    # 状态：直接映射
-                    "state": "observation.state",
-                    
-                    # 动作
-                    "actions": "action",
-                    
-                    # 文本指令：RobotWin 转换时存在了 task 字段里
-                    "prompt": "task",
-                })
-            ]),
-            
-            base_config=DataConfig(
-                local_files_only=True,
-                prompt_from_task=True,
-            ),
-        ),
-        
-        # 5. 冻结参数：保持原样
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True, 
-            paligemma_variant="gemma_2b_lora", 
-            action_expert_variant="gemma_300m_lora"
-        ).get_freeze_filter(),
-        
-        # 6. 权重加载：保持原样 (指向 Pi0.5 Base)
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/home/chenquan/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
-        ),
-        
-        # 7. 训练超参：保持原样
-        batch_size=32,
-        num_train_steps=20000,  
-        ema_decay=None,
-        fsdp_devices=2,
-        save_interval=5000,
-    ),
-    #########acp train config for robotwin##############
-    TrainConfig(
-        name="pi05_aloha_robotwin_acp_lora",
-        model=pi0_config.Pi0Config(
-            pi05=True,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ),
-        data=LeRobotAlohaACPDataConfig(
-            repo_id=os.getenv("REPO_ID", "place_mouse_pad_test_1_repo"),
-            adapt_to_pi=False,
-            base_config=DataConfig(
-                local_files_only=True,
-                prompt_from_task=True,
-            ),
-        ),
-        freeze_filter=pi0_config.Pi0Config(
-            pi05=True,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
-        ).get_freeze_filter(),
-        weight_loader=weight_loaders.CheckpointWeightLoader(
-            "/home/chenquan/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
-        ),
-        batch_size=32,
-        num_train_steps=30000,
-        ema_decay=None,
-        fsdp_devices=2,
-        save_interval=10000,
-    ),
+  
     #######################################################
     TrainConfig(
         name="pi05_aloha_robotwin_lora",  # 给个新名字
@@ -1047,19 +905,28 @@ _CONFIGS = [
         fsdp_devices=2,
         save_interval=10000,
     ),
+        # ICL SUPPORT: pi05 + human-video in-context support training config.
+    # Based on pi05_aloha_robotwin_lora, but enables support_images/support_caption.
     TrainConfig(
-        name="pi05_aloha_robotwin_base_eval",
+        name="pi05_aloha_robotwin_icl_random_lora",
 
-        # === 核心模型定义 ===
         model=pi0_config.Pi0Config(
-            pi05=True,                 # 仍然是 Pi0.5
-            paligemma_variant="gemma_2b",      # 非 LoRA
-            action_expert_variant="gemma_300m" # 非 LoRA
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+
+            # ICL SUPPORT: enable model-side support-video context.
+            use_support_context=True,
+            num_support_frames=8,
+            use_support_caption=True,
+            use_support_progress=True,
+            use_support_role_embedding=True,
+            support_caption_max_len=128,
+            support_progress_embed_dim=128,
         ),
 
-        # === 数据配置：完全复用你现在的 ALOHA / Robotwin 数据设置 ===
         data=LeRobotAlohaDataConfig(
-            repo_id=os.getenv("REPO_ID", "place_mouse_pad_test_1_repo"),
+            repo_id=os.getenv("REPO_ID", "one_task_test_repo"),
             adapt_to_pi=False,
             repack_transforms=_transforms.Group(inputs=[
                 _transforms.RepackTransform({
@@ -1076,174 +943,42 @@ _CONFIGS = [
             base_config=DataConfig(
                 local_files_only=True,
                 prompt_from_task=True,
+
+                # ICL SUPPORT: enable data-side support loading.
+                use_support_context=True,
+                support_manifest_path=os.getenv(
+                    "SUPPORT_MANIFEST_PATH",
+                    "/data/RoboTwin/data/support_data_test/manifests/one_task_test_human_random_k8_rounds40.jsonl",
+                ),
+                support_rounds_per_cycle=int(os.getenv("SUPPORT_ROUNDS_PER_CYCLE", "40")),
+                support_cache_size=1024,
+                num_support_frames=8,
+                support_caption_max_len=128,
             ),
         ),
 
-        # === 纯 base 测评不需要冻结器 ===
-        # 因为你现在是拿现成 checkpoint 做 eval，不是继续训练
-        freeze_filter=nnx.Nothing,
+        # ICL SUPPORT:
+        # Keep the original LoRA freeze behavior. The new support modules are not matched by the
+        # llm-freeze regex, so they remain trainable together with LoRA parameters.
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            use_support_context=True,
+        ).get_freeze_filter(),
 
-        # === 这里写 pi05_base 的路径，方便和你现有风格保持一致 ===
-        # 但如果你走的是 serve / eval 从 checkpoint_dir 直接加载，
-        # 这项实际上不是关键
+        # ICL SUPPORT:
+        # Loading pi05_base into an in-context model requires allow_missing_regex in weight_loaders.py,
+        # so newly added support parameters can keep random initialization.
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/home/chenquan/.cache/openpi/openpi-assets/checkpoints/pi05_base/params"
         ),
 
-        # === 下面这些对 eval 基本无所谓，给占位即可 ===
         batch_size=32,
-        num_train_steps=30000,
+        num_train_steps=90000,
         ema_decay=None,
         fsdp_devices=2,
         save_interval=10000,
-    ),
-    TrainConfig(
-        name="pi05_aloha_full_base",
-        model=pi0_config.Pi0Config(pi05=True),
-        data=LeRobotAlohaDataConfig(
-            repo_id="your_repo_id",
-            repack_transforms=_transforms.Group(inputs=[
-                _transforms.RepackTransform({
-                    "images": {
-                        "cam_high": "observation.images.cam_high",
-                        "cam_left_wrist": "observation.images.cam_left_wrist",
-                        "cam_right_wrist": "observation.images.cam_right_wrist",
-                    },
-                    "state": "observation.state",
-                    "actions": "action",
-                    "prompt": "prompt",
-                })
-            ]),
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        num_train_steps=20_000,
-        batch_size=64,
-        fsdp_devices=1,  # refer line 359
-    ),
-    # pi0_base by lora
-    TrainConfig(
-        name="pi0_base_aloha_robotwin_lora",
-        model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
-        data=LeRobotAlohaDataConfig(
-            repo_id="test",  # your datasets repo_id
-            adapt_to_pi=False,
-            repack_transforms=_transforms.Group(inputs=[
-                _transforms.RepackTransform({
-                    "images": {
-                        "cam_high": "observation.images.cam_high",
-                        "cam_left_wrist": "observation.images.cam_left_wrist",
-                        "cam_right_wrist": "observation.images.cam_right_wrist",
-                    },
-                    "state": "observation.state",
-                    "actions": "action",
-                    "prompt": "prompt",
-                })
-            ]),
-            base_config=DataConfig(
-                local_files_only=True,  # Set to True for local-only datasets.
-                prompt_from_task=True,  # Set to True for prompt by task_name
-            ),
-        ),
-        freeze_filter=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora",
-                                    action_expert_variant="gemma_300m_lora").get_freeze_filter(),
-        batch_size=32,  # the total batch_size not pre_gpu batch_size
-        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
-        num_train_steps=30000,
-        fsdp_devices=1,  # refer line 359
-    ),
-    # pi0_fast_base by lora
-    TrainConfig(
-        name="pi0_fast_aloha_robotwin_lora",
-        model=pi0_fast.Pi0FASTConfig(paligemma_variant="gemma_2b_lora"),
-        data=LeRobotAlohaDataConfig(
-            repo_id="your_repo_id",  # your datasets repo_id
-            adapt_to_pi=False,
-            repack_transforms=_transforms.Group(inputs=[
-                _transforms.RepackTransform({
-                    "images": {
-                        "cam_high": "observation.images.cam_high",
-                        "cam_left_wrist": "observation.images.cam_left_wrist",
-                        "cam_right_wrist": "observation.images.cam_right_wrist",
-                    },
-                    "state": "observation.state",
-                    "actions": "action",
-                    "prompt": "prompt",
-                })
-            ]),
-            base_config=DataConfig(
-                local_files_only=True,  # Set to True for local-only datasets.
-                prompt_from_task=True,
-            ),
-        ),
-        freeze_filter=pi0_fast.Pi0FASTConfig(
-            paligemma_variant="gemma_2b_lora",
-        ).get_freeze_filter(),
-        batch_size=32,
-        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_base/params"),
-        num_train_steps=30000,
-        fsdp_devices=2,  # refer line 359
-    ),
-    # pi0_base by full
-    TrainConfig(
-        name="pi0_base_aloha_robotwin_full",
-        model=pi0_config.Pi0Config(),
-        data=LeRobotAlohaDataConfig(
-            repo_id="your_repo_id",  # your datasets repo_id
-            adapt_to_pi=False,
-            repack_transforms=_transforms.Group(inputs=[
-                _transforms.RepackTransform({
-                    "images": {
-                        "cam_high": "observation.images.cam_high",
-                        "cam_left_wrist": "observation.images.cam_left_wrist",
-                        "cam_right_wrist": "observation.images.cam_right_wrist",
-                    },
-                    "state": "observation.state",
-                    "actions": "action",
-                    "prompt": "prompt",
-                })
-            ]),
-            base_config=DataConfig(
-                local_files_only=True,  # Set to True for local-only datasets.
-                prompt_from_task=True,  # Set to True for prompt by task_name
-            ),
-        ),
-        freeze_filter=pi0_config.Pi0Config().get_freeze_filter(),
-        batch_size=32,  # the total batch_size not pre_gpu batch_size
-        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_base/params"),
-        num_train_steps=30000,
-        fsdp_devices=4,  # refer line 359
-    ),
-    # pi0_fast_base by full
-    TrainConfig(
-        name="pi0_fast_aloha_robotwin_full",
-        model=pi0_fast.Pi0FASTConfig(),
-        data=LeRobotAlohaDataConfig(
-            repo_id="your_repo_id",  # your datasets repo_id
-            adapt_to_pi=False,
-            repack_transforms=_transforms.Group(inputs=[
-                _transforms.RepackTransform({
-                    "images": {
-                        "cam_high": "observation.images.cam_high",
-                        "cam_left_wrist": "observation.images.cam_left_wrist",
-                        "cam_right_wrist": "observation.images.cam_right_wrist",
-                    },
-                    "state": "observation.state",
-                    "actions": "action",
-                    "prompt": "prompt",
-                })
-            ]),
-            base_config=DataConfig(
-                prompt_from_task=True,
-            ),
-        ),
-        freeze_filter=pi0_fast.Pi0FASTConfig().get_freeze_filter(),
-        batch_size=32,
-        weight_loader=weight_loaders.CheckpointWeightLoader("s3://openpi-assets/checkpoints/pi0_fast_base/params"),
-        num_train_steps=30000,
-        fsdp_devices=1,  # refer line 359
     ),
     #
     # RoboArena configs.
