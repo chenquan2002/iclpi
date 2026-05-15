@@ -121,8 +121,8 @@ class Observation(Generic[ArrayT]):
     support_image_mask: at.Bool[ArrayT, "*b k"] | None = None
     support_frame_progress: at.Float[ArrayT, "*b k"] | None = None
     chunk_progress: at.Float[ArrayT, "*b one"] | None = None
-    support_caption_tokens: at.Int[ArrayT, "*b l"] | None = None
-    support_caption_mask: at.Bool[ArrayT, "*b l"] | None = None
+    support_caption_tokens: at.Int[at.Array, "*b caption_len"] | None = None
+    support_caption_mask: at.Bool[at.Array, "*b caption_len"] | None = None
 
     @classmethod
     def from_dict(cls, data: at.PyTree[ArrayT]) -> "Observation[ArrayT]":

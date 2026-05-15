@@ -975,10 +975,10 @@ _CONFIGS = [
         ),
 
         batch_size=32,
-        num_train_steps=90000,
+        num_train_steps=10,
         ema_decay=None,
         fsdp_devices=2,
-        save_interval=10000,
+        save_interval=10,
     ),
     #
     # RoboArena configs.
