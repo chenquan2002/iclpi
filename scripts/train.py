@@ -335,7 +335,42 @@ def main(config: _config.TrainConfig):
         for i in range(min(5, len(next(iter(batch[0].images.values())))))
     ]
     wandb.log({"camera_views": images_to_log}, step=0)
+    ######add support image visualize######
+    def _to_wandb_image_array(x):
+        x = np.asarray(x)
 
+        # Observation.from_dict converts images from uint8 [0, 255] to float [-1, 1].
+        # Convert them back to [0, 1] for wandb visualization.
+        if x.dtype != np.uint8:
+            x = (x + 1.0) / 2.0
+            x = np.clip(x, 0.0, 1.0)
+
+        return x
+
+
+    if getattr(batch[0], "support_images", None) is not None:
+        support = np.asarray(batch[0].support_images)  # [B, K, H, W, 3]
+
+        support_images_to_log = []
+        num_samples_to_log = min(3, support.shape[0])
+        num_support_frames = support.shape[1]
+
+        for i in range(num_samples_to_log):
+            # Concatenate K support frames horizontally.
+            support_grid = np.concatenate(
+                [_to_wandb_image_array(support[i, k]) for k in range(num_support_frames)],
+                axis=1,
+            )
+
+            support_images_to_log.append(
+                wandb.Image(
+                    support_grid,
+                    caption=f"sample {i}: {num_support_frames} support frames",
+                )
+            )
+
+        wandb.log({"support_views": support_images_to_log}, step=0)
+    ##########################################
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
